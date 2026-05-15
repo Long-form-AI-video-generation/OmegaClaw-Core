@@ -14,6 +14,8 @@
     "- Search the web: search string"
     "- Search the web using the Tavily Search Agent: tavily-search string"
     "- Get technical analysis for a stock ticker using the Technical Analysis Agent: technical-analysis ticker"
+    ;BRAND IDENTITY:
+    "- Generate campaign ideas for a brand: campaign-ideas string"
     ;CODE EXECUTION:
     "- Execute MeTTa expression: metta sexpression"
     "Example to invoke Non-Axiomatic Logic via MeTTa: "
@@ -53,6 +55,13 @@
 
 (= (technical-analysis $ticker)
    (py-call (agentverse.technical_analysis $ticker)))
+
+; ── Brand identity ──────────────────────────────────────────────────────────
+
+(= (campaign-ideas $brief)
+   (let $result (py-call (agentverse.campaign_ideas $brief))
+      (progn (send $result)
+         $result)))
 
 !(import_prolog_functions_from_file (library OmegaClaw-Core ./src/skills.pl) (shell first_char gc read_file_tail))
 

@@ -1,10 +1,12 @@
 import asyncio
 import json
 import os
+import re
 from typing import Any
 
 from uagents import Model
 from uagents.query import send_sync_message
+from uagents.resolver import RulesBasedResolver
 
 TECHNICAL_ANALYSIS_AGENT_ADDRESS = os.environ.get(
     "TECHNICAL_ANALYSIS_AGENT_ADDRESS",
@@ -14,6 +16,13 @@ TAVILY_SEARCH_AGENT_ADDRESS = os.environ.get(
     "TAVILY_SEARCH_AGENT_ADDRESS",
     "agent1qt5uffgp0l3h9mqed8zh8vy5vs374jl2f8y0mjjvqm44axqseejqzmzx9v8",
 )
+CAMPAIGN_IDEAS_AGENT_ADDRESS = os.environ.get("CAMPAIGN_IDEAS_AGENT_ADDRESS", "")
+CAMPAIGN_IDEAS_AGENT_ENDPOINT = (
+    os.environ.get("CAMPAIGN_IDEAS_AGENT_ENDPOINT")
+    or os.environ.get("CAMPAIGN_IDEAS_AGENT_ENDPOINTS", "http://127.0.0.1:8010/submit")
+    .split(",")[0]
+    .strip()
+)
 
 
 class WebSearchRequest(Model):
@@ -22,6 +31,14 @@ class WebSearchRequest(Model):
 
 class TechAnalysisRequest(Model):
     ticker: str
+
+
+class CampaignIdeasRequest(Model):
+    brief: str
+
+
+class CampaignIdeasResponse(Model):
+    result: str
 
 
 def _truncate_text(value: Any, limit: int) -> str:
@@ -66,13 +83,19 @@ def _format_tavily_results(response: str, max_results: int = 5) -> str:
 
     return f"({' '.join(formatted)})" if formatted else response
 
-async def _ask_agent(destination: str, request: Model, timeout: int = 60) -> str:
-    envelope_or_status = await send_sync_message(
-        destination=destination,
-        message=request,
-        timeout=timeout,
-    )
-    return str(envelope_or_status)
+async def _ask_agent(
+    destination: str,
+    request: Model,
+    timeout: int = 60,
+    response_type: type[Model] | None = None,
+    resolver: RulesBasedResolver | None = None,
+) -> Any:
+    kwargs: dict[str, Any] = {"destination": destination, "message": request, "timeout": timeout}
+    if response_type is not None:
+        kwargs["response_type"] = response_type
+    if resolver is not None:
+        kwargs["resolver"] = resolver
+    return await send_sync_message(**kwargs)
 
 
 def technical_analysis(ticker: str, timeout: int = 60) -> str:
@@ -94,3 +117,31 @@ def tavily_search(search_query: str, timeout: int = 60) -> str:
         return _format_tavily_results(response)
     except Exception as e:
         return f"error: {e}"
+
+def campaign_ideas(brief: str, timeout: int = 60) -> str:
+    if not CAMPAIGN_IDEAS_AGENT_ADDRESS:
+        return (
+            "error: CAMPAIGN_IDEAS_AGENT_ADDRESS is not set. "
+            "Start agents/campaign_generator/agent.py and export its printed address."
+        )
+
+    try:
+        request = CampaignIdeasRequest(brief=brief)
+        resolver = RulesBasedResolver(
+            {CAMPAIGN_IDEAS_AGENT_ADDRESS: CAMPAIGN_IDEAS_AGENT_ENDPOINT}
+        )
+        response = asyncio.run(
+            _ask_agent(
+                CAMPAIGN_IDEAS_AGENT_ADDRESS,
+                request,
+                int(timeout),
+                response_type=CampaignIdeasResponse,
+                resolver=resolver,
+            )
+        )
+        if isinstance(response, CampaignIdeasResponse):
+            return response.result
+        return str(response)
+    except Exception as e:
+        return f"error: {e}"
+
