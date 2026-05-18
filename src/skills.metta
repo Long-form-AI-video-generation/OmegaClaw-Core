@@ -59,9 +59,11 @@
 ; ── Brand identity ──────────────────────────────────────────────────────────
 
 (= (campaign-ideas $brief)
-   (let $result (py-call (agentverse.campaign_ideas $brief))
-      (progn (send $result)
-         $result)))
+   (let $check (py-call (agentverse.check_brand_existance $brief))
+   (let $result (py-call (agentverse.campaign_ideas $check))
+                       (progn (send $result)
+                              $result))
+   ))
 
 !(import_prolog_functions_from_file (library OmegaClaw-Core ./src/skills.pl) (shell first_char gc read_file_tail))
 

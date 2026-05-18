@@ -145,3 +145,69 @@ def campaign_ideas(brief: str, timeout: int = 60) -> str:
     except Exception as e:
         return f"error: {e}"
 
+def check_brand_existance(brief: str, timeout: int = 60) -> str:
+    try:
+        try:
+            from lib_llm_ext import callProvider
+        except ImportError:
+            import sys as _sys
+            _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from lib_llm_ext import callProvider
+
+        prompt = (
+            "Extract the brand name and campaign title from the text below. "
+            "Return valid JSON only — no markdown, no commentary. "
+            'Schema: {"brand": "", "campaign_title": ""}. '
+            "Use an empty string if you cannot determine a field.\n\n"
+            f"Text: {brief}"
+        )
+        response = callProvider("Ollama-local", prompt, max_tokens=256)
+        content = response.strip()
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
+            content = re.sub(r"\s*```$", "", content).strip()
+        start, end = content.find("{"), content.rfind("}")
+        if start != -1 and end > start:
+            content = content[start : end + 1]
+        parsed = json.loads(content)
+        brand = " ".join(str(parsed.get("brand", "")).split())
+        campaign_title = " ".join(str(parsed.get("campaign_title", "")).split())
+        return f"BRAND: {brand or 'unknown'} , CAMPAIGN: {campaign_title or 'unknown'}"
+    except Exception as e:
+        return f"error: {e}"
+
+
+def build_campaign_brief(brand_sym: str, check_str: str, context_attrs: str) -> str:
+    """Build the structured brief for the campaign agent.
+
+    brand_sym:     brand symbol from atomspace (e.g. "Tesla"), or "" if not found
+    check_str:     "BRAND: Tesla , CAMPAIGN: fast car campaign"
+    context_attrs: newline-separated "attr: val" string from get-brand-context, or ""
+    """
+    brand = str(brand_sym).strip()
+    check_str = str(check_str)
+
+    if not brand or brand.lower() in {"unknown", ""}:
+        m = re.search(r'BRAND:\s*([^,\n]+)', check_str, re.IGNORECASE)
+        brand = m.group(1).strip() if m else "unknown"
+
+    m = re.search(r'CAMPAIGN:\s*([^,\n]+)', check_str, re.IGNORECASE)
+    campaign = m.group(1).strip() if m else ""
+
+    context_json = "{}"
+    attrs_str = str(context_attrs).strip()
+    if attrs_str:
+        attrs: dict[str, str] = {}
+        for line in attrs_str.splitlines():
+            if ": " in line:
+                k, v = line.split(": ", 1)
+                attrs[k.strip()] = v.strip()
+        if attrs:
+            context_json = json.dumps(attrs)
+
+    lines = [f"company: {brand}"]
+    if campaign and campaign.lower() != "unknown":
+        lines.append(f"campaign: {campaign}")
+    lines.append(f"context: {context_json}")
+    return "\n".join(lines)
+        
