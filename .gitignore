@@ -17,3 +17,8 @@ Autotests/logs/
 
 # IDE
 .idea/
+
+
+queue/
+logs/
+history/

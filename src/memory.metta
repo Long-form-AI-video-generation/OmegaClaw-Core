@@ -12,14 +12,15 @@
           (configure maxEpisodeRecallLines 20)
           (configure maxHistory 30000)
           (configure embeddingprovider Local) ;OpenAI or Local
+          (configure instanceId default)
           (if (== (embeddingprovider) Local)
               (py-call (lib_llm_ext.initLocalEmbedding)) _)))
 
 (= (getPrompt)
-   (read-file (library OmegaClaw-Core ./memory/prompt.txt)))
+   (py-call (agentverse.read_instance_file (py-call (agentverse.get_instance_prompt_file (py-call (agentverse.get_instance_id)))))))
 
 (= (getHistory)
-   (read_file_tail (library OmegaClaw-Core ./memory/history.metta) (maxHistory)))
+   (py-call (agentverse.read_instance_file_tail (py-call (agentverse.get_instance_history_file (py-call (agentverse.get_instance_id)))) (maxHistory))))
 
 (= (addToHistory $lastmessage $response $sexpr $msgnew)
    (if $msgnew
@@ -36,7 +37,7 @@
        (useGPTEmbedding (string-safe $str))))
 
 (= (appendToHistory $addition)
-   (append-file (library OmegaClaw-Core ./memory/history.metta) (swrite $addition)))
+   (py-call (agentverse.append_instance_history (py-call (agentverse.get_instance_history_file (py-call (agentverse.get_instance_id)))) (swrite $addition))))
 
 (= (remember $str)
    (progn (py-call (lib_chromadb.remember $str (embed $str) (get_time_as_string)))

@@ -24,7 +24,7 @@
 
 (= (getContext)
    (string-safe (py-str ("PROMPT: " (getPrompt) " SKILLS: " (getSkills)
-                         " OUTPUT_FORMAT: Up to 5 lines, do not wrap quotes around args, do not use variables:" (newline)
+                         " OUTPUT_FORMAT: Up to 5 lines. Arguments are LITERAL text — never use placeholders, variable names, or summaries. Copy text exactly as given:" (newline)
                          " toolName1 arg1" (newline)
                          " toolName2 arg2" (newline)
                          " toolName3 arg3" (newline)

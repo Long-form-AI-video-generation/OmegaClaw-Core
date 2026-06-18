@@ -46,7 +46,7 @@ def around_time(needle_time_str, k):
 def balance_parentheses(s):
     s = s.replace("_quote_", '"').replace("_newline_", "\n")
     sexprs = []
-    special_two_arg_cmds = {"write-file", "append-file"}
+    special_two_arg_cmds = {"write-file", "append-file", "post-task", "complete-task"}
     for line in s.splitlines():
         line = line.strip()
         if not line:
@@ -128,6 +128,10 @@ def test_balance_parenthesis():
 	assert balance_parentheses('write-file "test.txt" "hello world"') == '((write-file "test.txt" "hello world"))'
 	assert balance_parentheses('write-file test.txt "hello world"') == '((write-file "test.txt" "hello world"))'
 	assert balance_parentheses('send test.xt hello world') == '((send "test.xt hello world"))'
+	assert balance_parentheses('post-task CDA Here is the brief for Nike.') == '((post-task "CDA" "Here is the brief for Nike."))'
+	assert balance_parentheses('(post-task CDA Here is the brief for Nike.)') == '((post-task "CDA" "Here is the brief for Nike."))'
+	assert balance_parentheses('complete-task t123 concepts ready') == '((complete-task "t123" "concepts ready"))'
+
 
 if __name__ == "__main__":
     test_balance_parenthesis()

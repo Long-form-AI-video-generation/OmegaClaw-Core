@@ -16,6 +16,13 @@
     "- Get technical analysis for a stock ticker using the Technical Analysis Agent: technical-analysis ticker"
     ;BRAND IDENTITY:
     "- Generate campaign ideas for a brand: campaign-ideas string"
+    "- Generate a script for a user-approved campaign idea: generate-script brand | campaign-title | idea-name"
+
+    ;TASK EXECUTION:
+    "- Post a task to another agent: post-task agent-id message"
+    "- Check your own pending tasks: check-my-tasks"
+    "- Mark a task as done: complete-task task-id result"
+
     ;CODE EXECUTION:
     "- Execute MeTTa expression: metta sexpression"
     "Example to invoke Non-Axiomatic Logic via MeTTa: "
@@ -56,14 +63,74 @@
 (= (technical-analysis $ticker)
    (py-call (agentverse.technical_analysis $ticker)))
 
-; ── Brand identity ──────────────────────────────────────────────────────────
+; -- Brand identity ------------------------------------------------
+
+(= (find-brand-in-brief $brand_name)
+   (let $sym (sread $brand_name)
+        (let $exists (collapse (match &self (Brand $sym name $_) True))
+             (if (== $exists ())
+                 ""
+                 $sym))))
+
+(= (get-brand-context $brand)
+   (let $kvs (collapse (match &self (Brand $brand $attr $val)
+                               (progn (translatePredicate (atom_string $attr $astr))
+                                      (string_concat $astr (string_concat ": " $val)))))
+        (if (== $kvs ())
+            ""
+            (progn (translatePredicate (atomic_list_concat $kvs "\n" $ja))
+                   (translatePredicate (atom_string $ja $js))
+                   $js))))
 
 (= (campaign-ideas $brief)
    (let $check (py-call (agentverse.check_brand_existance $brief))
-   (let $result (py-call (agentverse.campaign_ideas $check))
-                       (progn (send $result)
-                              $result))
-   ))
+        (let $brand_name (py-call (agentverse.extract_brand_from_check $check))
+             (let $brand (find-brand-in-brief $brand_name)
+                  (let $bctx (get-brand-context $brand)
+                       (let $payload (py-call (agentverse.build_campaign_brief $brand $check $bctx))
+                            (let $result (py-call (agentverse.campaign_ideas $payload))
+                                 (let $atoms_expr (py-call (agentverse.store_campaign_ideas $result))
+                                      (let $menu (py-call (agentverse.format_ideas_menu $result))
+                                           (let $_ (py-call (agentverse.auto_complete_task_for_brief $brief $menu))
+                                                (progn (metta $atoms_expr)
+                                                       (send $menu)
+                                                       $menu)))))))))))
+
+(= (generate-script $brief)
+   (let $parsed (py-call (agentverse.parse_script_request $brief))
+        (let $brand_name (py-call (agentverse.extract_field_from_json $parsed brand))
+             (let $campaign (py-call (agentverse.extract_field_from_json $parsed campaign))
+                  (let $idea (py-call (agentverse.extract_field_from_json $parsed idea))
+                       (let $brand (find-brand-in-brief $brand_name)
+                            (let $bctx (get-brand-context $brand)
+                                 (let $payload (py-call (agentverse.build_script_brief $brand_name $campaign $idea $bctx))
+                                      (let $result (py-call (agentverse.generate_script $payload))
+                                           (progn (send $result)
+                                                  $result))))))))))                                                 
+
+;-- Interagent task routing -------------------------------------------------
+     (= (post-task $to $message)
+          (py-call (agentverse.post_task_summary $to $message)))
+
+     ; check-my-tasks: CDA auto-advances — it fetches the oldest pending brief
+     ; and runs campaign-ideas on it directly (campaign-ideas then auto-completes
+     ; the task). The local model is kept out of the fetch->work handoff because
+     ; it cannot reliably copy a TASK_ID/MSG payload verbatim and loops on the
+     ; fetch instead. Other agents get the plain TASK_ID/MSG summary to act on.
+     ; Returns NO-TASKS (and does nothing else) when idle.
+     (= (check-my-tasks)
+          (if (== (instanceId) cda)
+               (let $brief (py-call (agentverse.get_next_brief (instanceId)))
+                    (if (== $brief "NO-TASKS")
+                         "NO-TASKS"
+                         (campaign-ideas $brief)))
+               (let $summary (py-call (agentverse.get_pending_tasks_as_metta (instanceId)))
+                    (if (== $summary "NO-TASKS")
+                         "NO-TASKS"
+                         (py-call (helper.normalize_string $summary))))))
+
+     (= (complete-task $id $result)
+          (py-call (agentverse.complete_task_summary $id $result)))
 
 !(import_prolog_functions_from_file (library OmegaClaw-Core ./src/skills.pl) (shell first_char gc read_file_tail))
 

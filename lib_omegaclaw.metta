@@ -7,16 +7,20 @@
 !(import! &self (library OmegaClaw-Core lib_llm_ext.py))
 !(import! &self (library OmegaClaw-Core ./src/helper.py))
 !(import! &self (library OmegaClaw-Core ./src/agentverse.py))
+!(import! &self (library OmegaClaw-Core ./channels/atomspace_api.py))
+
+!(import! &self (library OmegaClaw-Core ./channels/web_channel.py))
 !(import! &self (library OmegaClaw-Core ./channels/irc.py))
 !(import! &self (library OmegaClaw-Core ./channels/mattermost.py))
 !(import! &self (library OmegaClaw-Core ./channels/telegram.py))
 !(import! &self (library OmegaClaw-Core ./channels/websearch.py))
 !(import! &self (library OmegaClaw-Core ./src/utils))
 !(import! &self (library OmegaClaw-Core ./src/channels))
+
 !(import! &self (library OmegaClaw-Core ./src/skills))
 !(import! &self (library OmegaClaw-Core ./src/memory))
-!(import! &self (library OmegaClaw-Core ./src/context))
 !(import! &self (library OmegaClaw-Core ./src/loop))
 !(import! &self (library OmegaClaw-Core ./brands/brands))
+
 !(git-import! "https://github.com/patham9/petta_lib_chromadb.git")
 !(import! &self (library petta_lib_chromadb lib_chromadb))
