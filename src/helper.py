@@ -1,4 +1,6 @@
 from collections import deque
+import ast
+import json
 import re
 from datetime import datetime
 
@@ -47,6 +49,19 @@ def balance_parentheses(s):
     s = s.replace("_quote_", '"').replace("_newline_", "\n")
     sexprs = []
     special_two_arg_cmds = {"write-file", "append-file", "post-task", "complete-task"}
+
+    def as_arg(text):
+        text = text.strip()
+        if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+            try:
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, str):
+                    text = parsed
+            except (SyntaxError, ValueError):
+                
+                text = text[1:-1]
+        return json.dumps(text, ensure_ascii=False)
+
     for line in s.splitlines():
         line = line.strip()
         if not line:
@@ -85,23 +100,15 @@ def balance_parentheses(s):
                     content = ""
             else:
                 split_rest = rest.split(maxsplit=1)
-                filename = '"' + split_rest[0].replace('"', '\\"') + '"'
+                filename = as_arg(split_rest[0])
                 content = split_rest[1].strip() if len(split_rest) > 1 else ""
             if content:
-                if content.startswith('"') and content.endswith('"'):
-                    sexprs.append(f"({cmd} {filename} {content})")
-                else:
-                    content = content.replace('"', '\\"')
-                    sexprs.append(f'({cmd} {filename} "{content}")')
+                sexprs.append(f"({cmd} {filename} {as_arg(content)})")
             else:
                 sexprs.append(f"({cmd} {filename})")
             continue
         if rest:
-            if rest.startswith('"') and rest.endswith('"'):
-                sexprs.append(f"({cmd} {rest})")
-            else:
-                rest = rest.replace('"', '\\"')
-                sexprs.append(f'({cmd} "{rest}")')
+            sexprs.append(f"({cmd} {as_arg(rest)})")
         else:
             sexprs.append(f"({cmd})")
     ret = " ".join(sexprs)

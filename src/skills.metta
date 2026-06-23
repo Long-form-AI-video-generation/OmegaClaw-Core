@@ -1,41 +1,38 @@
+; -- Per-agent skill grants:  (SkillGrant <instance-id> <skill-name>) ---------
+; CoSA — operator's single point of contact & orchestrator.
+!(add-atom &self (SkillGrant cosa check-my-tasks))
+!(add-atom &self (SkillGrant cosa complete-task))
+!(add-atom &self (SkillGrant cosa post-task))
+!(add-atom &self (SkillGrant cosa send))
+; CDA — creative director. Returns concepts/briefs to CoSA via complete-task
+!(add-atom &self (SkillGrant cda check-my-tasks))
+!(add-atom &self (SkillGrant cda complete-task))
+!(add-atom &self (SkillGrant cda campaign-ideas))
+; SWA — scriptwriter. Owns script generation; returns results via complete-task.
+!(add-atom &self (SkillGrant swa check-my-tasks))
+!(add-atom &self (SkillGrant swa complete-task))
+!(add-atom &self (SkillGrant swa generate-script))
+
+; getSkills: show this instance only the skills it has been granted. An
+; instance with no grants at all (ungoverned, e.g. `default`) gets the full
 (= (getSkills)
-   (;INTERNAL:
-    "- Remember a particular string such as skills and memories: remember string"
-    "- Query long-term embedding memory for skills and memories with short phrases only: query string"
-    "- Episodes searches history for episodes around a time stamp, time format is same as in TIME: episodes time_string"
-    "- Pin a certain string as short-term working memory item to keep track of task state: pin string"
-    ;SHELL AND FILE I/O:
-    "- Execute shell command without apostrophe in string, it returns the command output to you: shell string"
-    "- Read file to string: read-file filename"
-    "- Write string to file: write-file filename string"
-    "- Append line to file: append-file filename string",
-    ;COMMUNICATION CHANNELS:
-    "- Send message to user: send string"
-    "- Search the web: search string"
-    "- Search the web using the Tavily Search Agent: tavily-search string"
-    "- Get technical analysis for a stock ticker using the Technical Analysis Agent: technical-analysis ticker"
-    ;BRAND IDENTITY:
-    "- Generate campaign ideas for a brand: campaign-ideas string"
-    "- Generate a script for a user-approved campaign idea: generate-script brand | campaign-title | idea-name"
+   (let $docs (collapse (match &self (SkillDoc $name $desc)
+                               (if (skillAllowed $name) $desc (empty))))
+        (if (== $docs ())
+            ""
+            (progn (translatePredicate (atomic_list_concat $docs "\n" $joined))
+                   (translatePredicate (atom_string $joined $js))
+                   $js))))
 
-    ;TASK EXECUTION:
-    "- Post a task to another agent: post-task agent-id message"
-    "- Check your own pending tasks: check-my-tasks"
-    "- Mark a task as done: complete-task task-id result"
-
-    ;CODE EXECUTION:
-    "- Execute MeTTa expression: metta sexpression"
-    "Example to invoke Non-Axiomatic Logic via MeTTa: "
-    "metta (|- ((--> (× sam garfield) friend) (stv 1.0 0.9))"
-    "          ((--> garfield animal) (stv 1.0 0.9)))"
-    "metta (|- ((==> (--> (× $1 elephant) eat) (--> $1 ([] dangerous))) (stv 1.0 0.9))"
-    "          ((--> (× tiger elephant) eat) (stv 1.0 0.9)))"
-    "Also: note the $1 for independent variables, and for negated knowledge use (stv 0.0 0.9)"
-    "Additionally |- also works for revision, to merge evidence even when the term of both premises is the same."
-    "You can also use PLN:"
-    "metta (|~ ((Implication (Inheritance $1 (IntSet Feathered))"
-    "           (Inheritance $1 Bird)) (stv 1.0 0.9))"
-    "          ((Inheritance Pingu (IntSet Feathered)) (stv 1.0 0.9)))"))
+; skillAllowed: True iff $name is callable by the current instance. Ungoverned
+; instances (no grants) allow everything, matching getSkills' fallback.
+(= (skillAllowed $name)
+   (let $inst (sread (py-call (agentverse.get_instance_id)))
+        (if (== () (collapse (match &self (SkillGrant $inst $g) True)))
+            True
+            (if (== () (collapse (match &self (SkillGrant $inst $name) True)))
+                False
+                True))))
 
 
 (= (read-file $file)
@@ -66,7 +63,7 @@
 ; -- Brand identity ------------------------------------------------
 
 (= (find-brand-in-brief $brand_name)
-   (let $sym (sread $brand_name)
+   (let $sym (sread (py-call (agentverse._brand_sym $brand_name)))
         (let $exists (collapse (match &self (Brand $sym name $_) True))
              (if (== $exists ())
                  ""
@@ -94,40 +91,34 @@
                                            (let $_ (py-call (agentverse.auto_complete_task_for_brief $brief $menu))
                                                 (progn (metta $atoms_expr)
                                                        (send $menu)
-                                                       $menu)))))))))))
+                                                       "CAMPAIGN-IDEAS-DONE: concepts generated, stored, and the originating task closed. Do NOT call campaign-ideas again for this brief — call check-my-tasks for any new task, otherwise stop.")))))))))))
 
 (= (generate-script $brief)
-   (let $parsed (py-call (agentverse.parse_script_request $brief))
-        (let $brand_name (py-call (agentverse.extract_field_from_json $parsed brand))
-             (let $campaign (py-call (agentverse.extract_field_from_json $parsed campaign))
-                  (let $idea (py-call (agentverse.extract_field_from_json $parsed idea))
-                       (let $brand (find-brand-in-brief $brand_name)
-                            (let $bctx (get-brand-context $brand)
-                                 (let $payload (py-call (agentverse.build_script_brief $brand_name $campaign $idea $bctx))
-                                      (let $result (py-call (agentverse.generate_script $payload))
-                                           (progn (send $result)
-                                                  $result))))))))))                                                 
+   (if (skillAllowed generate-script)
+       (let $parsed (py-call (agentverse.parse_script_request $brief))
+            (let $brand_name (py-call (agentverse.extract_field_from_json $parsed brand))
+                 (let $campaign (py-call (agentverse.extract_field_from_json $parsed campaign))
+                      (let $idea (py-call (agentverse.extract_field_from_json $parsed idea))
+                           (let $brand (find-brand-in-brief $brand_name)
+                                (let $bctx (get-brand-context $brand)
+                                     (let $payload (py-call (agentverse.build_script_brief $brand_name $campaign $idea $bctx))
+                                          (let $result (py-call (agentverse.generate_script $payload))
+                                               (let $_ (py-call (agentverse.store_generated_script $brand_name $campaign $idea $result))
+                                                    (let $_ (py-call (agentverse.auto_complete_task_for_brief $brief $result))
+                                                         (progn (send $result)
+                                                                $result)))))))))))
+       "PERMISSION-DENIED: generate-script is not granted to this agent — route script generation through the agent that owns it"))
 
 ;-- Interagent task routing -------------------------------------------------
      (= (post-task $to $message)
-          (py-call (agentverse.post_task_summary $to $message)))
-
-     ; check-my-tasks: CDA auto-advances — it fetches the oldest pending brief
-     ; and runs campaign-ideas on it directly (campaign-ideas then auto-completes
-     ; the task). The local model is kept out of the fetch->work handoff because
-     ; it cannot reliably copy a TASK_ID/MSG payload verbatim and loops on the
-     ; fetch instead. Other agents get the plain TASK_ID/MSG summary to act on.
-     ; Returns NO-TASKS (and does nothing else) when idle.
+          (if (skillAllowed post-task)
+              (py-call (agentverse.post_task_summary $to $message))
+              "PERMISSION-DENIED: post-task is not granted to this agent — return your work to CoSA via complete-task instead"))
      (= (check-my-tasks)
-          (if (== (instanceId) cda)
-               (let $brief (py-call (agentverse.get_next_brief (instanceId)))
-                    (if (== $brief "NO-TASKS")
-                         "NO-TASKS"
-                         (campaign-ideas $brief)))
-               (let $summary (py-call (agentverse.get_pending_tasks_as_metta (instanceId)))
-                    (if (== $summary "NO-TASKS")
-                         "NO-TASKS"
-                         (py-call (helper.normalize_string $summary))))))
+          (let $summary (py-call (agentverse.get_pending_tasks_as_metta (instanceId)))
+               (if (== $summary "NO-TASKS")
+                    "NO-TASKS"
+                    (py-call (helper.normalize_string $summary)))))
 
      (= (complete-task $id $result)
           (py-call (agentverse.complete_task_summary $id $result)))

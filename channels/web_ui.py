@@ -50,6 +50,26 @@ def _api_post_task(to_agent: str, message: str) -> str:
         raise RuntimeError(f"AtomSpace API unavailable: {e}") from e
 
 
+def _api_decide(brand_sym: str, campaign_title: str, idea_name: str, status: str) -> bool:
+
+    from urllib.parse import quote
+    body = json.dumps({"idea": idea_name, "status": status}).encode()
+    url = (f"{_API_BASE}/brands/{quote(brand_sym, safe='')}"
+           f"/campaigns/{quote(campaign_title, safe='')}/decision")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            json.loads(resp.read())
+            return True
+    except Exception:
+        return False
+
+
 app = FastAPI(title="Brand Studio", root_path=_ROOT_PATH)
 
 
@@ -93,6 +113,28 @@ def _get_ideas(brand_sym: str, campaign_title: str) -> list[dict]:
         return result
     return []
 
+
+
+def _get_approvals(brand_sym: str) -> dict:
+
+    data = _api(f"/brands/{brand_sym}/approvals")
+    if isinstance(data, dict):
+        return {
+            "approved":  data.get("approved", {}) if isinstance(data.get("approved"), dict) else {},
+            "decisions": data.get("decisions", {}) if isinstance(data.get("decisions"), dict) else {},
+        }
+    return {"approved": {}, "decisions": {}}
+
+
+def _get_script(brand_sym: str, campaign_title: str, idea_name: str) -> str | None:
+
+    from urllib.parse import quote
+    data = _api(f"/brands/{brand_sym}/campaigns/{quote(campaign_title, safe='')}"
+                f"/script?idea={quote(idea_name, safe='')}")
+    if isinstance(data, dict):
+        s = data.get("script")
+        return s if isinstance(s, str) and s.strip() else None
+    return None
 
 
 def _meta_path(job_id: str) -> Path:
@@ -208,6 +250,44 @@ def _api_status_banner() -> str:
     return ""
 
 
+def _idea_detail_rows(idea: dict) -> str:
+    
+    if not isinstance(idea, dict):
+        return ""
+    theme      = idea.get("theme", "")
+    hook       = idea.get("hook", "")
+    activation = idea.get("activation", "")
+    channels   = idea.get("channels", [])
+    ch_str     = ", ".join(channels) if isinstance(channels, list) else str(channels)
+
+    rows = ""
+    if theme:
+        rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Theme:</span> {theme}</p>'
+    if hook:
+        rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Hook:</span> <em>"{hook}"</em></p>'
+    if activation:
+        rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Activation:</span> {activation}</p>'
+    if ch_str:
+        rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Channels:</span> {ch_str}</p>'
+    return rows
+
+
+def _brand_tabs(sym: str, active: str) -> str:
+    """Tab strip linking a brand's Overview and Approved Ideas pages."""
+    def tab(label: str, href: str, key: str) -> str:
+        cls = ("border-indigo-600 text-indigo-700"
+               if active == key else
+               "border-transparent text-gray-500 hover:text-gray-700")
+        return (f'<a href="{href}" class="px-3 py-2 border-b-2 text-sm font-medium {cls}">'
+                f'{label}</a>')
+    return (
+        '<div class="flex gap-1 border-b border-gray-200 mb-6">'
+        + tab("Overview", _url(f"/brand/{sym}"), "overview")
+        + tab("Approved Ideas", _url(f"/brand/{sym}/approved"), "approved")
+        + "</div>"
+    )
+
+
 def _page_dashboard(brands: list[dict]) -> str:
     banner = _api_status_banner()
     if not brands:
@@ -264,6 +344,8 @@ def _page_brand(sym: str, attrs: dict) -> str:
         {f'<span class="text-gray-400 italic text-lg">{motto}</span>' if motto else ""}
       </div>
 
+      {_brand_tabs(sym, "overview")}
+
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
 
         <div class="bg-white rounded-xl border border-gray-200 p-6 h-fit">
@@ -319,52 +401,64 @@ def _page_campaign(job_id: str, job: dict, response: str | None) -> str:
     else:
         
         ideas = _get_ideas(brand_sym, campaign_title)
-        
+
         if not ideas:
             ideas = _extract_ideas(response)
+
+        decisions = _get_approvals(brand_sym).get("decisions", {}).get(campaign_title, {})
 
         if ideas:
             idea_cards = ""
             for idea in ideas:
-                name       = idea.get("name", "") if isinstance(idea, dict) else str(idea)
-                theme      = idea.get("theme", "")      if isinstance(idea, dict) else ""
-                hook       = idea.get("hook", "")       if isinstance(idea, dict) else ""
-                activation = idea.get("activation", "") if isinstance(idea, dict) else ""
-                channels   = idea.get("channels", [])   if isinstance(idea, dict) else []
-                ch_str     = ", ".join(channels) if isinstance(channels, list) else str(channels)
-
+                name      = idea.get("name", "") if isinstance(idea, dict) else str(idea)
                 name_safe = name.replace('"', "&quot;")
+                detail_rows = _idea_detail_rows(idea if isinstance(idea, dict) else {})
 
-                
-                detail_rows = ""
-                if theme:
-                    detail_rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Theme:</span> {theme}</p>'
-                if hook:
-                    detail_rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Hook:</span> <em>"{hook}"</em></p>'
-                if activation:
-                    detail_rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Activation:</span> {activation}</p>'
-                if ch_str:
-                    detail_rows += f'<p class="text-sm text-gray-600"><span class="font-medium text-gray-700">Channels:</span> {ch_str}</p>'
+                status = decisions.get(name, "")
+                if status == "approved":
+                    badge = ('<span class="text-xs font-semibold text-green-700 bg-green-50 '
+                             'border border-green-200 rounded px-2 py-1">Approved</span>')
+                elif status == "rejected":
+                    badge = ('<span class="text-xs font-semibold text-red-700 bg-red-50 '
+                             'border border-red-200 rounded px-2 py-1"> Rejected</span>')
+                else:
+                    badge = ""
 
                 idea_cards += f"""
                 <details class="group bg-white border border-gray-200 rounded-xl overflow-hidden
                                 hover:border-indigo-300 transition open:border-indigo-400 open:shadow-md">
                   <summary class="flex items-center justify-between px-5 py-4 cursor-pointer list-none select-none">
                     <span class="font-semibold text-gray-800 group-open:text-indigo-700">{name}</span>
-                    <span class="text-gray-400 text-xs transition-transform group-open:rotate-180">▼</span>
+                    <span class="flex items-center gap-3">
+                      {badge}
+                      <span class="text-gray-400 text-xs transition-transform group-open:rotate-180">▼</span>
+                    </span>
                   </summary>
                   <div class="px-5 pb-5 pt-3 border-t border-gray-100 space-y-2">
                     {detail_rows if detail_rows else '<p class="text-sm text-gray-400 italic">No additional details available.</p>'}
-                    <div class="pt-3">
-                      <form method="POST" action="{_url('/script/start')}">
+                    <div class="pt-3 flex items-center gap-2">
+                      <form method="POST" action="{_url('/idea/decide')}">
                         <input type="hidden" name="brand_sym"       value="{brand_sym}">
                         <input type="hidden" name="campaign_title"  value="{campaign_title}">
                         <input type="hidden" name="idea_name"       value="{name_safe}">
                         <input type="hidden" name="campaign_job_id" value="{job_id}">
+                        <input type="hidden" name="decision"        value="approved">
                         <button type="submit"
-                          class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm
+                          class="bg-green-600 hover:bg-green-700 text-white text-sm
                                  px-4 py-2 rounded-lg font-medium transition">
-                          Generate Script for this Idea →
+                          Approve
+                        </button>
+                      </form>
+                      <form method="POST" action="{_url('/idea/decide')}">
+                        <input type="hidden" name="brand_sym"       value="{brand_sym}">
+                        <input type="hidden" name="campaign_title"  value="{campaign_title}">
+                        <input type="hidden" name="idea_name"       value="{name_safe}">
+                        <input type="hidden" name="campaign_job_id" value="{job_id}">
+                        <input type="hidden" name="decision"        value="rejected">
+                        <button type="submit"
+                          class="bg-white border border-gray-300 text-gray-700 hover:bg-gray-50
+                                 text-sm px-4 py-2 rounded-lg font-medium transition">
+                          Reject
                         </button>
                       </form>
                     </div>
@@ -374,7 +468,9 @@ def _page_campaign(job_id: str, job: dict, response: str | None) -> str:
             ideas_section = f"""
             <div class="space-y-3">
               <p class="text-sm text-gray-500 mb-1">
-                Expand an idea to see details and generate a script.
+                Expand an idea to review it, then approve or reject.
+                Approved ideas appear under the brand's
+                <a href="{_url(f'/brand/{brand_sym}/approved')}" class="text-indigo-600 hover:underline">Approved Ideas</a> tab.
               </p>
               {idea_cards}
             </div>"""
@@ -383,16 +479,18 @@ def _page_campaign(job_id: str, job: dict, response: str | None) -> str:
             safe = response.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             ideas_section = f"""
             <pre class="whitespace-pre-wrap text-sm text-gray-700 leading-relaxed mb-6">{safe}</pre>
-            <form method="POST" action="{_url('/script/start')}" class="space-y-3">
-              <input type="hidden" name="brand_sym"      value="{brand_sym}">
-              <input type="hidden" name="campaign_title" value="{campaign_title}">
-              <input name="idea_name" required placeholder="Type the idea name"
+            <form method="POST" action="{_url('/idea/decide')}" class="space-y-3">
+              <input type="hidden" name="brand_sym"       value="{brand_sym}">
+              <input type="hidden" name="campaign_title"  value="{campaign_title}">
+              <input type="hidden" name="campaign_job_id" value="{job_id}">
+              <input type="hidden" name="decision"        value="approved">
+              <input name="idea_name" required placeholder="Type the idea name to approve"
                 class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm
                        focus:ring-2 focus:ring-indigo-500 outline-none">
               <button type="submit"
                 class="w-full bg-green-600 hover:bg-green-700 text-white
                        px-5 py-2 rounded-lg text-sm font-semibold transition">
-                Generate Script →
+                Approve Idea →
               </button>
             </form>"""
 
@@ -455,6 +553,63 @@ def _page_script(job_id: str, job: dict, response: str | None) -> str:
     """)
 
 
+def _page_brand_approved(sym: str, attrs: dict, approvals: dict) -> str:
+    name = attrs.get("name", sym)
+    approved = approvals.get("approved", {})  # {campaign_title: [idea_dict, ...]}
+
+    if not approved:
+        body_inner = """
+        <div class="text-center py-16 text-gray-400">
+          <p class="text-lg">No approved ideas yet.</p>
+          <p class="text-sm mt-2">Approve campaign ideas from a campaign page and they will collect here.</p>
+        </div>"""
+    else:
+        sections = ""
+        for campaign, ideas in approved.items():
+            cards = ""
+            for idea in ideas:
+                nm = idea.get("name", "") if isinstance(idea, dict) else str(idea)
+                nm_safe = nm.replace('"', "&quot;")
+                detail_rows = _idea_detail_rows(idea if isinstance(idea, dict) else {})
+                cards += f"""
+                <div class="bg-white border border-gray-200 rounded-xl px-5 py-4">
+                  <div class="flex items-center justify-between">
+                    <span class="font-semibold text-gray-800">{nm}</span>
+                    <span class="text-xs font-semibold text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1">✓ Approved</span>
+                  </div>
+                  <div class="mt-2 space-y-1">{detail_rows}</div>
+                  <div class="pt-3">
+                    <form method="POST" action="{_url('/script/start')}">
+                      <input type="hidden" name="brand_sym"      value="{sym}">
+                      <input type="hidden" name="campaign_title" value="{campaign}">
+                      <input type="hidden" name="idea_name"      value="{nm_safe}">
+                      <button type="submit"
+                        class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm
+                               px-4 py-2 rounded-lg font-medium transition">
+                        Generate Script →
+                      </button>
+                    </form>
+                  </div>
+                </div>"""
+            sections += f"""
+            <section class="mb-8">
+              <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-400 mb-3">{campaign}</h2>
+              <div class="space-y-3">{cards}</div>
+            </section>"""
+        body_inner = sections
+
+    return _layout(f"{name} — Approved Ideas", f"""
+      <div class="flex flex-wrap items-center gap-3 mb-8">
+        <a href="{_url('/')}" class="text-gray-400 hover:text-gray-600 text-sm">← Brands</a>
+        <h1 class="text-3xl font-bold">{name}</h1>
+      </div>
+
+      {_brand_tabs(sym, "approved")}
+
+      {body_inner}
+    """)
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return _page_dashboard(_list_brands())
@@ -478,6 +633,26 @@ def brand_page(sym: str):
             status_code=404,
         )
     return _page_brand(sym, attrs)
+
+
+@app.get("/brand/{sym}/approved", response_class=HTMLResponse)
+def brand_approved_page(sym: str):
+    attrs = _read_brand(sym)
+    if not attrs:
+        api_up = _api("/brands") is not None
+        msg = (
+            f'Brand "<b>{sym}</b>" not found in AtomSpace.'
+            if api_up else
+            "OmegaClaw is not running — cannot load brand data from AtomSpace."
+        )
+        return HTMLResponse(
+            _layout("Not found", f"""
+              <p class="text-red-500 mb-4">{msg}</p>
+              <a href="{_url('/')}" class="text-indigo-600 text-sm hover:underline">← Dashboard</a>
+            """),
+            status_code=404,
+        )
+    return _page_brand_approved(sym, attrs, _get_approvals(sym))
 
 
 @app.post("/campaign/start")
@@ -547,18 +722,52 @@ def campaign_poll(job_id: str):
     )
 
 
+@app.post("/idea/decide")
+def idea_decide(
+    brand_sym: str = Form(""),
+    campaign_title: str = Form(""),
+    idea_name: str = Form(""),
+    decision: str = Form(""),
+    campaign_job_id: str = Form(""),
+):
+    decision = decision.strip().lower()
+    if brand_sym and campaign_title.strip() and idea_name.strip() and decision in ("approved", "rejected"):
+        _api_decide(brand_sym, campaign_title.strip(), idea_name.strip(), decision)
+
+    if campaign_job_id:
+        return RedirectResponse(_url(f"/campaign/{campaign_job_id}"), status_code=303)
+    return RedirectResponse(_url(f"/brand/{brand_sym}/approved"), status_code=303)
+
+
 @app.post("/script/start")
 def script_start(
     brand_sym: str = Form(""),
     campaign_title: str = Form(""),
     idea_name: str = Form(""),
-    campaign_job_id: str = Form(""), 
+    campaign_job_id: str = Form(""),
 ):
     if not brand_sym or not idea_name.strip():
         return RedirectResponse(_url("/"), status_code=303)
 
     attrs = _read_brand(brand_sym)
     brand_name = attrs.get("name", brand_sym)
+
+    
+    message = (
+        "SCRIPT REQUEST — the operator approved an idea for production. "
+        "Post a task to SWA (agent id: swa) whose message is EXACTLY the brief "
+        "line below, copied verbatim with nothing added or removed:\n"
+        f"{brand_name} | {campaign_title} | {idea_name.strip()}"
+    )
+    try:
+        task_id = _api_post_task("cosa", message)
+    except RuntimeError as e:
+        return HTMLResponse(
+            _layout("Error", f'<p class="text-red-500">{e}</p>'
+                             f'<p class="text-sm text-gray-500 mt-2">Make sure OmegaClaw (CoSA) is running.</p>'
+                             f'<a href="{_url(f"/brand/{brand_sym}/approved")}" class="text-indigo-600 text-sm">← Back</a>'),
+            status_code=503,
+        )
 
     job_id = uuid.uuid4().hex[:8]
     _write_job(job_id, {
@@ -568,13 +777,14 @@ def script_start(
         "campaign_title": campaign_title,
         "idea_name": idea_name.strip(),
         "campaign_job_id": campaign_job_id,
+        "task_id": task_id,
     })
 
-    
-    message = f"USER-APPROVED: call generate-script exactly once with: {brand_name} | {campaign_title} | {idea_name.strip()}"
-    _enqueue(job_id, message)
-
     return RedirectResponse(_url(f"/script/{job_id}"), status_code=303)
+
+
+def _script_for_job(job: dict) -> str | None:
+    return _get_script(job.get("brand_sym", ""), job.get("campaign_title", ""), job.get("idea_name", ""))
 
 
 @app.get("/script/{job_id}", response_class=HTMLResponse)
@@ -585,7 +795,7 @@ def script_page(job_id: str):
             _layout("Not found", '<p class="text-red-500">Job not found.</p>'),
             status_code=404,
         )
-    return _page_script(job_id, job, _poll_response(job_id))
+    return _page_script(job_id, job, _script_for_job(job))
 
 
 @app.get("/script/{job_id}/poll", response_class=HTMLResponse)
@@ -593,7 +803,7 @@ def script_poll(job_id: str):
     job = _read_job(job_id)
     if not job:
         return HTMLResponse("")
-    if _poll_response(job_id) is None:
+    if _script_for_job(job) is None:
         idea_name = job.get("idea_name", "")
         return HTMLResponse(
             _spinner(job_id, _url(f"/script/{job_id}/poll"), f'Writing script for "{idea_name}"…')

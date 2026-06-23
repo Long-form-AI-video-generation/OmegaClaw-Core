@@ -14,11 +14,24 @@ _ROOT = os.environ.get(
 )
 _TASKS_LOG   = os.path.join(_ROOT, "brands", "tasks_log.json")
 _TASKS_METTA = os.path.join(_ROOT, "brands", "tasks.metta")
+_CAMPAIGNS_METTA = os.path.join(_ROOT, "brands", "campaigns.metta")
 print(f"[AtomSpaceAPI] ROOT={_ROOT} TASKS_METTA={_TASKS_METTA}")
 
 
 def _esc_metta(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _esc_script(s: str) -> str:
+    return (str(s).replace("\\", "\\\\").replace('"', '\\"')
+                  .replace("\r", "").replace("\n", "\\n"))
+
+
+def _unesc_script(s: str) -> str:
+    import re
+    return re.sub(r"\\(.)",
+                  lambda m: {"n": "\n", '"': '"', "\\": "\\"}.get(m.group(1), m.group(1)),
+                  s)
 
 
 def _append_metta_atom(line: str) -> None:
@@ -36,12 +49,27 @@ def _append_metta_atom(line: str) -> None:
         print(f"[tasks.metta] OSError: {e}")
 
 
+def _append_campaigns_atom(line: str) -> None:
+    
+    try:
+        existing = open(_CAMPAIGNS_METTA, "r", encoding="utf-8").read() if os.path.exists(_CAMPAIGNS_METTA) else ""
+        if line not in existing:
+            os.makedirs(os.path.dirname(_CAMPAIGNS_METTA), exist_ok=True)
+            with open(_CAMPAIGNS_METTA, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            print(f"[campaigns.metta] wrote: {line}")
+    except OSError as e:
+        print(f"[campaigns.metta] OSError: {e}")
+
+
 
 _store: dict = {
-    "brands": [],        
-    "brand_attrs": {},   
-    "campaigns": {},     
-    "tasks": {},        
+    "brands": [],
+    "brand_attrs": {},
+    "campaigns": {},
+    "tasks": {},
+    "decisions": {},     
+    "scripts": {},      
 }
 _lock = threading.Lock()
 _started = False
@@ -101,6 +129,40 @@ def register_campaign_ideas(brand: str, campaign: str, ideas: list) -> None:
             normalized.append({"name": idea.strip()})
     with _lock:
         _store["campaigns"].setdefault(brand, {})[campaign] = {"ideas": normalized}
+
+
+def register_idea_decision(brand: str, campaign: str, idea: str, status: str) -> bool:
+    
+    brand    = str(brand).strip()
+    campaign = str(campaign).strip()
+    idea     = str(idea).strip()
+    status   = str(status).strip().lower()
+    if status not in ("approved", "rejected") or not (brand and campaign and idea):
+        return False
+    with _lock:
+        _store["decisions"].setdefault(brand, {}).setdefault(campaign, {})[idea] = status
+    atom = "ApprovedIdea" if status == "approved" else "RejectedIdea"
+    _append_campaigns_atom(
+        f'!(add-atom &self ({atom} {brand} "{_esc_metta(campaign)}" "{_esc_metta(idea)}"))'
+    )
+    return True
+
+
+def register_script(brand: str, campaign: str, idea: str, script: str) -> bool:
+    
+    brand    = str(brand).strip()
+    campaign = str(campaign).strip()
+    idea     = str(idea).strip()
+    script   = str(script)
+    if not (brand and campaign and idea and script.strip()):
+        return False
+    with _lock:
+        _store["scripts"].setdefault(brand, {}).setdefault(campaign, {})[idea] = script
+    _append_campaigns_atom(
+        f'!(add-atom &self (CampaignScript {brand} "{_esc_script(campaign)}" '
+        f'"{_esc_script(idea)}" "{_esc_script(script)}"))'
+    )
+    return True
 
 
 
@@ -239,6 +301,38 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond({"registered": len(ideas)}, 201)
             return
 
+        # POST /api/brands/{sym}/campaigns/{title}/script  {"idea": "...", "script": "..."}
+        if (len(parts) == 6
+                and parts[:2] == ["api", "brands"]
+                and parts[3] == "campaigns"
+                and parts[5] == "script"):
+            sym      = unquote(parts[2])
+            campaign = unquote(parts[4])
+            idea     = str(data.get("idea", "")).strip()
+            script   = str(data.get("script", ""))
+            if not register_script(sym, campaign, idea, script):
+                self._respond({"error": "missing 'idea' or 'script'"}, 400)
+                return
+            print(f"[AtomSpaceAPI] Stored script: {sym} / {campaign} / {idea} ({len(script)} chars)")
+            self._respond({"stored": True}, 201)
+            return
+
+        # POST /api/brands/{sym}/campaigns/{title}/decision  {"idea": "...", "status": "approved"|"rejected"}
+        if (len(parts) == 6
+                and parts[:2] == ["api", "brands"]
+                and parts[3] == "campaigns"
+                and parts[5] == "decision"):
+            sym      = unquote(parts[2])
+            campaign = unquote(parts[4])
+            idea     = str(data.get("idea", "")).strip()
+            status   = str(data.get("status", "")).strip().lower()
+            if not register_idea_decision(sym, campaign, idea, status):
+                self._respond({"error": "missing 'idea' or invalid 'status'"}, 400)
+                return
+            print(f"[AtomSpaceAPI] Idea {status}: {sym} / {campaign} / {idea}")
+            self._respond({"sym": sym, "campaign": campaign, "idea": idea, "status": status}, 201)
+            return
+
         # POST /api/tasks  {"to": "CDA", "message": "..."}
         if parts == ["api", "tasks"]:
             to_agent = str(data.get("to", "")).strip()
@@ -327,6 +421,40 @@ class _Handler(BaseHTTPRequestHandler):
                 self._respond(data if data else {"ideas": []})
                 return
 
+            # GET /api/brands/{sym}/campaigns/{title}/script?idea=...  — finished
+            if (len(parts) == 6
+                    and parts[:2] == ["api", "brands"]
+                    and parts[3] == "campaigns"
+                    and parts[5] == "script"):
+                from urllib.parse import parse_qs
+                sym      = unquote(parts[2])
+                campaign = unquote(parts[4])
+                idea     = unquote(parse_qs(urlparse(self.path).query).get("idea", [""])[0])
+                script   = _store["scripts"].get(sym, {}).get(campaign, {}).get(idea)
+                self._respond({"script": script})
+                return
+
+            # GET /api/brands/{sym}/approvals  — operator decisions for a brand,
+            if (len(parts) == 4
+                    and parts[:2] == ["api", "brands"]
+                    and parts[3] == "approvals"):
+                sym       = unquote(parts[2])
+                decisions = {c: dict(ideas) for c, ideas in _store["decisions"].get(sym, {}).items()}
+                camps     = _store["campaigns"].get(sym, {})
+                approved: dict = {}
+                for campaign, ideas in decisions.items():
+                    names = [n for n, s in ideas.items() if s == "approved"]
+                    if not names:
+                        continue
+                    detail_map = {
+                        it["name"]: it
+                        for it in camps.get(campaign, {}).get("ideas", [])
+                        if isinstance(it, dict) and it.get("name")
+                    }
+                    approved[campaign] = [detail_map.get(n, {"name": n}) for n in names]
+                self._respond({"approved": approved, "decisions": decisions})
+                return
+
             # GET /api/tasks/{agent_id}  — pending tasks for an agent
             if len(parts) == 3 and parts[:2] == ["api", "tasks"]:
                 agent_id_lower = unquote(parts[2]).lower()
@@ -368,12 +496,63 @@ def _restore_tasks_from_metta() -> None:
     print(f"[AtomSpaceAPI] Restored {len(_store['tasks'])} task(s) from tasks.metta")
 
 
+def _restore_decisions_from_campaigns() -> None:
+    
+    import re
+    if not os.path.exists(_CAMPAIGNS_METTA):
+        return
+    try:
+        text = open(_CAMPAIGNS_METTA, "r", encoding="utf-8").read()
+    except OSError as e:
+        print(f"[AtomSpaceAPI] failed to read campaigns.metta: {e}")
+        return
+
+    count = 0
+    pattern = r'\((Approved|Rejected)Idea\s+(\S+)\s+"((?:[^"\\]|\\.)*)"\s+"((?:[^"\\]|\\.)*)"\)'
+    for m in re.finditer(pattern, text):
+        kind, sym, campaign, idea = m.group(1), m.group(2), m.group(3), m.group(4)
+        campaign = campaign.replace('\\"', '"').replace("\\\\", "\\")
+        idea     = idea.replace('\\"', '"').replace("\\\\", "\\")
+        status   = "approved" if kind == "Approved" else "rejected"
+        with _lock:
+            _store["decisions"].setdefault(sym, {}).setdefault(campaign, {})[idea] = status
+        count += 1
+    print(f"[AtomSpaceAPI] Restored {count} idea decision(s) from campaigns.metta")
+
+
+def _restore_scripts_from_campaigns() -> None:
+   
+    import re
+    if not os.path.exists(_CAMPAIGNS_METTA):
+        return
+    try:
+        text = open(_CAMPAIGNS_METTA, "r", encoding="utf-8").read()
+    except OSError as e:
+        print(f"[AtomSpaceAPI] failed to read campaigns.metta: {e}")
+        return
+
+    count = 0
+    pattern = (r'\(CampaignScript\s+(\S+)\s+"((?:[^"\\]|\\.)*)"\s+'
+               r'"((?:[^"\\]|\\.)*)"\s+"((?:[^"\\]|\\.)*)"\)')
+    for m in re.finditer(pattern, text):
+        sym      = m.group(1)
+        campaign = _unesc_script(m.group(2))
+        idea     = _unesc_script(m.group(3))
+        script   = _unesc_script(m.group(4))
+        with _lock:
+            _store["scripts"].setdefault(sym, {}).setdefault(campaign, {})[idea] = script
+        count += 1
+    print(f"[AtomSpaceAPI] Restored {count} script(s) from campaigns.metta")
+
+
 def start_server() -> None:
     global _started
     if _started:
         return
     _started = True
     _restore_tasks_from_metta()
+    _restore_decisions_from_campaigns()
+    _restore_scripts_from_campaigns()
     _report_loaded_brands()
     try:
         server = HTTPServer(("localhost", _PORT), _Handler)

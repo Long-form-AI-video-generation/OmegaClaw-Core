@@ -45,4 +45,5 @@ from agentverse_tasks import (
     complete_task,
     complete_task_summary,
     get_pending_tasks_as_metta,
+    auto_complete_task_for_brief,
 )

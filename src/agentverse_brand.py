@@ -251,6 +251,33 @@ def store_campaign_ideas(result_json: str) -> str:
     return f"(progn {add_calls})" if atoms else "()"
 
 
+def store_generated_script(brand_name, campaign, idea, script) -> str:
+    
+    from urllib.request import Request, urlopen
+    from urllib.parse import quote
+    bsym     = _brand_sym(brand_name)
+    campaign = str(campaign).strip()
+    idea     = str(idea).strip()
+    if not (campaign and idea and str(script).strip()):
+        return "STORE-SCRIPT-SKIPPED"
+    url = (f"{_ATOMSPACE_API}/brands/{quote(bsym, safe='')}"
+           f"/campaigns/{quote(campaign, safe='')}/script")
+    try:
+        req = Request(
+            url,
+            data=json.dumps({"idea": idea, "script": str(script)}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=5):
+            pass
+        print(f"[store_generated_script] stored script for {bsym}/{campaign}/{idea}")
+        return "STORE-SCRIPT-OK"
+    except Exception as e:
+        print(f"[store_generated_script] failed: {e}")
+        return f"STORE-SCRIPT-FAILED: {e}"
+
+
 def build_campaign_brief(brand_sym: str, check_str: str, context_attrs: str) -> str:
     brand = str(brand_sym).strip()
     check_str = str(check_str)
@@ -384,7 +411,11 @@ def parse_script_request(brief: str) -> str:
 
     parts = [p.strip() for p in re.split(r"[|]", brief) if p.strip()]
     if len(parts) >= 3:
-        return json.dumps({"brand": parts[0], "campaign": parts[1], "idea": parts[2]})
+        
+        brand    = parts[0].splitlines()[0].strip()
+        campaign = parts[1].splitlines()[0].strip()
+        idea     = parts[2].splitlines()[0].strip()
+        return json.dumps({"brand": brand, "campaign": campaign, "idea": idea})
 
     try:
         try:

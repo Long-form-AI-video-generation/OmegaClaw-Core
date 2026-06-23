@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -95,12 +96,24 @@ def post_task_summary(to_agent, message) -> str:
     return f"Task {tid} posted to {to_agent}"
 
 
-def complete_task_summary(task_id, result) -> str:
+def _clean_task_id(task_id) -> str:
     
-    resp = complete_task(str(task_id), str(result))
+    tid = str(task_id).strip().strip('"').strip()
+    m = re.search(r"\bt[0-9a-f]{6,}\b", tid)
+    if m:
+        return m.group(0)
+    if tid.upper().startswith("TASK_ID="):
+        tid = tid[len("TASK_ID="):].strip()
+    return tid
+
+
+def complete_task_summary(task_id, result) -> str:
+
+    tid = _clean_task_id(task_id)
+    resp = complete_task(tid, str(result))
     if resp.startswith("error"):
-        return f"COMPLETE-TASK-FAILED for {task_id}: {resp}"
-    return f"Task {task_id} completed"
+        return f"COMPLETE-TASK-FAILED for {tid}: {resp}"
+    return f"Task {tid} completed"
 
 
 def get_pending_tasks_as_metta(agent_id=None) -> str:
@@ -122,3 +135,27 @@ def get_pending_tasks_as_metta(agent_id=None) -> str:
     summary = " ||| ".join(f'TASK_ID={t["id"]} MSG={t["message"]}' for t in tasks)
     print(f"[check-my-tasks] returning {len(tasks)} unique of {len(result)} pending task(s)")
     return summary
+
+
+def auto_complete_task_for_brief(brief, result) -> str:
+    
+    brief_s = str(brief).strip()
+    # The model often copies the "MSG=" prefix from the task summary .
+    if brief_s.startswith("MSG="):
+        brief_s = brief_s[len("MSG="):].strip()
+
+    resolved_id = os.environ.get("OMEGACLAW_INSTANCE_ID", "default") or "default"
+    pending = _request("GET", f"/tasks/{resolved_id}")
+    if not isinstance(pending, list):
+        return "AUTO-COMPLETE-SKIPPED: no pending tasks"
+
+    match = None
+    for t in pending:
+        msg = str(t.get("message", "")).strip()
+        if msg and (msg == brief_s or msg in brief_s or brief_s in msg):
+            match = t
+            break
+    if match is None:
+        return "AUTO-COMPLETE-SKIPPED: no matching task"
+
+    return complete_task(str(match["id"]), str(result))
